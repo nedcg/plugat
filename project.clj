@@ -7,12 +7,17 @@
                  [seancorfield/next.jdbc "1.0.424"]
                  [ring/ring-core "1.8.0"]
                  [ring/ring-devel "1.8.0"]
+                 [aleph "0.4.6"]
                  [ring/ring-jetty-adapter "1.8.0"]
-                 [metosin/reitit "0.4.2"]
+                 [org.postgresql/postgresql "42.2.12"]
                  [hikari-cp "2.11.0"]
                  [honeysql "0.9.10"]
                  [environ "1.1.0"]
+                 [metosin/reitit "0.4.2"]
+                 [metosin/muuntaja "0.6.6"]
                  [org.clojure/tools.logging "1.1.0"]
+                 [org.mongodb/bson "4.1.0-beta1"]
+                 [migratus "1.2.8"]
                  [ch.qos.logback/logback-classic "1.2.3"]]
 
   :plugins [[lein-ring "0.12.5"]
@@ -22,11 +27,11 @@
   :ring {:handler plugat.core/app}
   :migratus {:store         :database
              :migration-dir "migrations"
-             :db            {:classname   "com.mysql.jdbc.Driver"
-                             :subprotocol "mysql"
-                             :subname     "//localhost/migratus"
-                             :user        "root"
-                             :password    ""}}
+             :db {:classname "org.postgresql.Driver"
+                  :subprotocol "postgresql"
+                  :subname "//localhost/plugat"
+                  :user "plugat"
+                  :password "plugat"}}
   :main ^:skip-aot plugat.core
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all}})
