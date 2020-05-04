@@ -1,13 +1,11 @@
 (ns plugat.core
   (:require
-    [aleph.http :as aleph]
     [ring.adapter.jetty :refer [run-jetty]]
     [ring.util.response :refer [response not-found content-type]]
     [reitit.ring :as ring]
-    [hikari-cp.core :refer :all]
     [next.jdbc :as jdbc]
     [next.jdbc.sql :as sql]
-    [spec-tools.spec :as spec]
+    [next.jdbc.connection :as connection]
     [clojure.spec.alpha :as s]
     [reitit.http.interceptors.dev :as dev]
     [reitit.dev.pretty :as pretty]
@@ -22,7 +20,8 @@
     [environ.core :refer [env]]
     [clojure.set :as set]
     [muuntaja.core :as m])
-  (:import (org.bson.types ObjectId)))
+  (:import (org.bson.types ObjectId)
+           (com.zaxxer.hikari HikariDataSource)))
 
 (def oid-hex-str-regex #"^[0-9a-f]{24}$")
 (s/def ::oid (s/and string? #(re-matches oid-hex-str-regex %)))
@@ -38,9 +37,8 @@
 
 (defn gen-oid [] (.toHexString (ObjectId.)))
 
-(def ^:private datasource-options {:jdbc-url (env :database-url)})
-
-(defonce ds (delay (make-datasource datasource-options)))
+(def ^:private datasource-options {:jdbcUrl (env :database-url)})
+(defonce ds (delay (connection/->pool HikariDataSource datasource-options)))
 
 (def db-interceptor
   {:name ::db
@@ -60,16 +58,16 @@
   "Interceptor that mounts itself if route has `:roles` data. Expects `:roles`
   to be a set of keyword and the context to have `[:user :roles]` with user roles.
   responds with HTTP 403 if user doesn't have the roles defined, otherwise no-op."
-  {:name ::authz
+  {:name    ::authz
    :compile (fn [{:keys [roles]} _]
               (if (seq roles)
-                {:description (str "requires roles " roles)
-                 :spec {:roles #{keyword?}}
+                {:description  (str "requires roles " roles)
+                 :spec         {:roles #{keyword?}}
                  :context-spec {:user {:roles #{keyword}}}
-                 :enter (fn [{{user-roles :roles} :user :as ctx}]
-                          (if (not (set/subset? roles user-roles))
-                            (assoc ctx :response {:status 403, :body "forbidden"})
-                            ctx))}))})
+                 :enter        (fn [{{user-roles :roles} :user :as ctx}]
+                                 (if (not (set/subset? roles user-roles))
+                                   (assoc ctx :response {:status 403, :body "forbidden"})
+                                   ctx))}))})
 
 (def interceptor-create-plug
   {:name ::create-plug
@@ -110,11 +108,11 @@
 
       ["/api"
        ["/plugs/:id" {:get {:interceptors [interceptor-get-plug]
-                            :roles #{:basic}
+                            :roles        #{:basic}
                             :parameters   {:path ::path-param}}}]
        ["/plugs" {:get  {:interceptors [interceptor-find-plugs]}
                   :post {:interceptors [interceptor-create-plug]
-                         :roles #{:basic}
+                         :roles        #{:basic}
                          :parameters   {:body ::plug-new}}}]]
 
       {:exception                    pretty/exception
@@ -143,7 +141,6 @@
     (.stop @server)
     (reset! server nil))
   (reset! server (run-jetty #'app {:port 3000, :join? false, :async true}))
-  ;(aleph/start-server #'app {:port 3000})
   (println "server running in port 3000"))
 
 (comment
