@@ -7,12 +7,12 @@
     [next.jdbc.sql :as sql]
     [next.jdbc.connection :as connection]
     [clojure.spec.alpha :as s]
-    [reitit.http.interceptors.dev :as dev]
     [reitit.dev.pretty :as pretty]
     [reitit.http :as http]
     [reitit.coercion.spec]
-    [reitit.http.coercion :as http-coercion]
     [reitit.interceptor.sieppari :as sieppari]
+    [reitit.http.coercion :as http-coercion]
+    [reitit.http.interceptors.dev :as dev]
     [reitit.http.interceptors.muuntaja :as muuntaja]
     [reitit.http.interceptors.parameters :as parameters]
     [reitit.http.interceptors.exception :as exception]
@@ -72,35 +72,28 @@
 (def interceptor-create-plug
   {:name ::create-plug
    :enter
-         (fn [context]
-           (let [id (gen-oid)
-                 new-plug (-> context
-                              (get-in [:request :parameters :body])
-                              (merge {:id id}))
-                 ds (get-in context [:request :datasource])]
-             (with-open [conn (jdbc/get-connection ds)]
+         (fn [{{:keys [parameters datasource]} :request :as ctx}]
+           (let [new-plug (merge (:body parameters) {:id (gen-oid)})]
+             (with-open [conn (jdbc/get-connection datasource)]
                (sql/insert! conn :plugs new-plug))
-             (assoc context :response (response new-plug))))})
+             (assoc ctx :response (response new-plug))))})
 
 (def interceptor-get-plug
   {:name ::get-plug-by-id
    :enter
-         (fn [context]
-           (let [id (get-in context [:request :parameters :path :id])
-                 ds (get-in context [:request :datasource])]
-             (with-open [conn (jdbc/get-connection ds)]
-               (if-let [result (sql/get-by-id conn :plugs id)]
-                 (assoc context :response (if (some? result)
-                                            (response result)
-                                            (not-found nil)))))))})
+         (fn [{{:keys [parameters datasource]} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (if-let [result (sql/get-by-id conn :plugs (get-in parameters [:path :id]))]
+               (assoc ctx :response (if (some? result)
+                                      (response result)
+                                      (not-found nil))))))})
 
 (def interceptor-find-plugs
   {:name ::find-plugs
    :enter
-         (fn [context]
-           (let [ds (get-in context [:request :datasource])]
-             (with-open [conn (jdbc/get-connection ds)]
-               (assoc context :response (sql/find-by-keys :plugs conn {})))))})
+         (fn [{{:keys [datasource]} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (assoc ctx :response (sql/find-by-keys :plugs conn {}))))})
 
 (def app
   (http/ring-handler
