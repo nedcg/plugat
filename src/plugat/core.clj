@@ -47,13 +47,14 @@
    :enter
          (fn [context]
            (update context :request assoc :datasource @ds))
-   :leave
-         (fn [context]
-           (when-not (empty? (:tx-data context))
-             (with-open [tx (jdbc/get-connection (get-in context [:request :datasource]))]
-               (jdbc/with-transaction tx (doseq [stm (:tx-data context)]
-                                           (jdbc/execute! tx stm))))
-             context))})
+   ;:leave
+   ;      (fn [context]
+   ;        (when-not (empty? (:tx-data context))
+   ;          (with-open [tx (jdbc/get-connection (get-in context [:request :datasource]))]
+   ;            (jdbc/with-transaction tx (doseq [stm (:tx-data context)]
+   ;                                        (jdbc/execute! tx stm))))
+   ;          context))
+   })
 
 (def authz-interceptor
   "Interceptor that mounts itself if route has `:roles` data. Expects `:roles`
