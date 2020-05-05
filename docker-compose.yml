@@ -1,7 +1,7 @@
-version: "3.8"
+version: "3.3"
 services:
 
-  db:
+  postgres:
     image: postgres:alpine
     ports:
       - "5432:5432"
@@ -9,20 +9,17 @@ services:
       - POSTGRES_USER=plugat
       - POSTGRES_PASSWORD=plugat
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - ./db-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/01-init.sh
     networks:
       - backend
-    deploy:
-      placement:
-        constraints:
-          - "node.role==manager"
 
   plugat-api:
     build: .
     ports:
       - "3000:3000"
     depends_on:
-      - db
+      - postgres
     networks:
       - backend
 
@@ -30,18 +27,21 @@ services:
     image: jboss/keycloak
     ports:
       - "8080:8080"
+      - "8443:8443"
     environment:
-      - KEYCLOAK_IMPORT=/opt/keycloak/config/realm-export.json
-      - DB_ADDR=db
+      - KEYCLOAK_USER=admin
+      - KEYCLOAK_PASSWORD=admin
+      - DB_VENDOR=postgres
+      - DB_ADDR=postgres
       - DB_PORT=5432
       - DB_USER=plugat
       - DB_PASSWORD=plugat
     volumes:
-      - /config/keycloak:/opt/keycloak/config
+      - ./config/keycloak:/opt/keycloak/config
     networks:
       - backend
     depends_on:
-      - db
+      - postgres
 
 networks:
   backend:

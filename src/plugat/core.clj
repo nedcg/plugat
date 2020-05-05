@@ -19,7 +19,13 @@
     [ring.middleware.reload :refer [wrap-reload]]
     [environ.core :refer [env]]
     [clojure.set :as set]
-    [muuntaja.core :as m])
+    [muuntaja.core :as m]
+    [buddy.core.keys :as keys]
+    [buddy.sign.jwt :as jwt]
+    [cheshire.core :as json]
+    [clojure.core.memoize :as memo]
+    [clojure.string :as str]
+    [buddy.core.codecs.base64 :as b64])
   (:import (org.bson.types ObjectId)
            (com.zaxxer.hikari HikariDataSource)))
 
@@ -53,6 +59,33 @@
    ;                                        (jdbc/execute! tx stm))))
    ;          context))
    })
+
+(defn decode-b64 [str] (String. (b64/decode (.getBytes str))))
+(defn parse-json [s]
+  ;; beware, I got some tokens from AWS Cognito where the last '}' was missing in the payload
+  (let [clean-str (if (str/ends-with? s "}") s (str s "}"))]
+    (json/parse-string clean-str keyword)))
+
+(defn decode [token]
+  (let [[header payload _] (clojure.string/split token #"\.")]
+    {:header  (parse-json (decode-b64 header))
+     :payload (parse-json (decode-b64 payload))}))
+
+(def auth-interceptor
+  {:name ::auth
+   :enter
+         (fn [{{:keys [headers]} :request :as ctx}]
+           (let [[_ token] (-> headers (get "authentication") (clojure.string/split #" "))
+                 public-key (-> (env :jwk-url) slurp (json/parse-string keyword) :keys first keys/jwk->public-key)
+                 {{:keys [sub name upn groups]} :payload} (decode token)]
+             (try
+               (jwt/unsign token public-key {:alg :rs256})
+               (assoc ctx :user {:id       sub
+                                 :name     name
+                                 :username upn
+                                 :roles    (map keyword groups)})
+               (catch Throwable t
+                 (assoc ctx :response {:status 401, :body "unauthorized"})))))})
 
 (def authz-interceptor
   "Interceptor that mounts itself if route has `:roles` data. Expects `:roles`

@@ -18,6 +18,7 @@
                  [metosin/reitit-sieppari "0.4.2"]
                  [metosin/reitit-dev "0.4.2"]
                  [metosin/muuntaja "0.6.6"]
+                 [buddy/buddy-sign "3.1.0"]
                  [org.mongodb/bson "4.1.0-beta1"]
                  [migratus "1.2.8"]
                  [org.clojure/tools.logging "1.1.0"]
