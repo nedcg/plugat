@@ -23,7 +23,6 @@
     [buddy.core.keys :as keys]
     [buddy.sign.jwt :as jwt]
     [cheshire.core :as json]
-    [clojure.core.memoize :as memo]
     [clojure.string :as str]
     [buddy.core.codecs.base64 :as b64])
   (:import (org.bson.types ObjectId)
@@ -43,7 +42,9 @@
 
 (defn gen-oid [] (.toHexString (ObjectId.)))
 
-(def ^:private datasource-options {:jdbcUrl (env :database-url)})
+(def ^:private datasource-options {:jdbcUrl (env :database-url)
+                                   :username (env :database-username)
+                                   :password (env :database-password)})
 (defonce ds (delay (connection/->pool HikariDataSource datasource-options)))
 
 (def db-interceptor
@@ -62,7 +63,6 @@
 
 (defn decode-b64 [str] (String. (b64/decode (.getBytes str))))
 (defn parse-json [s]
-  ;; beware, I got some tokens from AWS Cognito where the last '}' was missing in the payload
   (let [clean-str (if (str/ends-with? s "}") s (str s "}"))]
     (json/parse-string clean-str keyword)))
 
@@ -84,7 +84,7 @@
                                  :name     name
                                  :username upn
                                  :roles    (map keyword groups)})
-               (catch Throwable t
+               (catch Throwable _
                  (assoc ctx :response {:status 401, :body "unauthorized"})))))})
 
 (def authz-interceptor
@@ -126,7 +126,7 @@
    :enter
          (fn [{{:keys [datasource]} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
-             (assoc ctx :response (sql/find-by-keys :plugs conn {}))))})
+             (assoc ctx :response (response (sql/query conn ["select * from plugs"])))))})
 
 (def app
   (http/ring-handler
@@ -154,6 +154,7 @@
                                                      (http-coercion/coerce-response-interceptor)
                                                      (http-coercion/coerce-request-interceptor)
                                                      (http-coercion/coerce-exceptions-interceptor)
+                                                     auth-interceptor
                                                      db-interceptor
                                                      ]}})
     (ring/routes
