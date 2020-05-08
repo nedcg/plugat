@@ -24,7 +24,8 @@
     [buddy.sign.jwt :as jwt]
     [cheshire.core :as json]
     [clojure.string :as str]
-    [buddy.core.codecs.base64 :as b64])
+    [buddy.core.codecs.base64 :as b64]
+    [taoensso.carmine :as car :refer (wcar)])
   (:import (org.bson.types ObjectId)
            (com.zaxxer.hikari HikariDataSource)))
 
@@ -37,7 +38,8 @@
 (s/def ::longitude (s/double-in :min -180.0 :max 180 :NaN false :infinite? false))
 (s/def ::latitude (s/double-in :min -90.0 :max 90 :NaN false :infinite? false))
 (s/def ::coordinates (s/tuple ::longitude ::latitude))
-(s/def ::plug-new (s/keys :req-un [::title ::type ::description ::coordinates]))
+(s/def ::created-by uuid?)
+(s/def ::plug-new (s/keys :req-un [::title ::type ::description ::coordinates ::created-by]))
 (s/def ::path-param (s/keys :req-un [::id]))
 
 (defn gen-oid [] (.toHexString (ObjectId.)))
@@ -106,24 +108,38 @@
 (def interceptor-create-plug
   {:name ::create-plug
    :enter
-         (fn [{{:keys [parameters datasource]} :request :as ctx}]
-           (let [new-plug (merge (:body parameters) {:id (gen-oid)})]
+         (fn [{{:keys [parameters datasource rconn]} :request :as ctx}]
+           (let [id (gen-oid)
+                 new-plug (merge (:body parameters) {:id id})
+                 {:keys [latitude longitude]} new-plug]
              (with-open [conn (jdbc/get-connection datasource)]
-               (sql/insert! conn :plugs new-plug))
-             (assoc ctx :response (response new-plug))))})
+               (sql/insert! conn :plugs new-plug)
+               (wcar rconn (car/geoadd id longitude latitude new-plug))
+               (assoc ctx :response (response new-plug)))))})
 
 (def interceptor-get-plug
   {:name ::get-plug-by-id
    :enter
          (fn [{{:keys [parameters datasource]} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
-             (if-let [result (sql/get-by-id conn :plugs (get-in parameters [:path :id]))]
-               (assoc ctx :response (if (some? result)
-                                      (response result)
-                                      (not-found nil))))))})
+             (let [result (sql/get-by-id conn :plugs (get-in parameters [:path :id]))]
+               (when-not (any? result)
+                 (throw
+                   (ex-info "not found"
+                            {:type     :reitit.ring/response
+                             :response {:status 404
+                                        :body   "not found"}})))
+               (assoc ctx :response (response result)))))})
 
 (def interceptor-find-plugs
   {:name ::find-plugs
+   :enter
+         (fn [{{:keys [datasource user]} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (assoc ctx :response (response (sql/find-by-keys conn :plugs {:created-by (:id user)})))))})
+
+(def interceptor-find-plugs-around
+  {:name ::find-plugs-around
    :enter
          (fn [{{:keys [datasource]} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]

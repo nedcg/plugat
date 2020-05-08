@@ -6,6 +6,7 @@
   :dependencies [[org.clojure/clojure "1.10.0"]
                  [seancorfield/next.jdbc "1.0.424"]
                  [com.zaxxer/HikariCP "3.4.3"]
+                 [com.taoensso/carmine "2.19.1"]
                  [ring/ring-core "1.8.0"]
                  [ring/ring-devel "1.8.0"]
                  [ring/ring-jetty-adapter "1.8.0"]
