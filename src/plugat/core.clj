@@ -42,24 +42,10 @@
 
 (defn gen-oid [] (.toHexString (ObjectId.)))
 
-(def ^:private datasource-options {:jdbcUrl (env :database-url)
+(def ^:private datasource-options {:jdbcUrl  (env :database-url)
                                    :username (env :database-username)
                                    :password (env :database-password)})
 (defonce ds (delay (connection/->pool HikariDataSource datasource-options)))
-
-(def db-interceptor
-  {:name ::db
-   :enter
-         (fn [context]
-           (update context :request assoc :datasource @ds))
-   ;:leave
-   ;      (fn [context]
-   ;        (when-not (empty? (:tx-data context))
-   ;          (with-open [tx (jdbc/get-connection (get-in context [:request :datasource]))]
-   ;            (jdbc/with-transaction tx (doseq [stm (:tx-data context)]
-   ;                                        (jdbc/execute! tx stm))))
-   ;          context))
-   })
 
 (defn decode-b64 [str] (String. (b64/decode (.getBytes str))))
 (defn parse-json [s]
@@ -71,21 +57,32 @@
     {:header  (parse-json (decode-b64 header))
      :payload (parse-json (decode-b64 payload))}))
 
+(def db-interceptor
+  {:name  ::datasource
+   :enter (update % :request assoc :datasource @ds)})
+
 (def auth-interceptor
   {:name ::auth
    :enter
          (fn [{{:keys [headers]} :request :as ctx}]
-           (let [[_ token] (-> headers (get "authentication") (clojure.string/split #" "))
-                 public-key (-> (env :jwk-url) slurp (json/parse-string keyword) :keys first keys/jwk->public-key)
-                 {{:keys [sub name upn groups]} :payload} (decode token)]
-             (try
+           (try
+             (let [token-str (get headers "authorization")
+                   [_ token] (clojure.string/split token-str #" ")
+                   jwk-url (env :jwk-url)
+                   public-key (-> jwk-url slurp (json/parse-string keyword) :keys first keys/jwk->public-key)
+                   {{:keys [sub name upn groups]} :payload} (decode token)]
                (jwt/unsign token public-key {:alg :rs256})
                (assoc ctx :user {:id       sub
                                  :name     name
                                  :username upn
-                                 :roles    (map keyword groups)})
-               (catch Throwable _
-                 (assoc ctx :response {:status 401, :body "unauthorized"})))))})
+                                 :roles    (into #{} (map keyword groups))}))
+             (catch Throwable exception
+               (throw
+                 (ex-info "unauthorized"
+                          {:type     :reitit.ring/response
+                           :response {:status 401
+                                      :body   "unauthorized"}}
+                          exception)))))})
 
 (def authz-interceptor
   "Interceptor that mounts itself if route has `:roles` data. Expects `:roles`
@@ -98,9 +95,13 @@
                  :spec         {:roles #{keyword?}}
                  :context-spec {:user {:roles #{keyword}}}
                  :enter        (fn [{{user-roles :roles} :user :as ctx}]
-                                 (if (not (set/subset? roles user-roles))
-                                   (assoc ctx :response {:status 403, :body "forbidden"})
-                                   ctx))}))})
+                                 (when-not (set/subset? roles user-roles)
+                                   (throw
+                                     (ex-info "forbidden"
+                                              {:type     :reitit.ring/response
+                                               :response {:status 403
+                                                          :body   "forbidden"}})))
+                                 ctx)}))})
 
 (def interceptor-create-plug
   {:name ::create-plug
@@ -136,7 +137,8 @@
        ["/plugs/:id" {:get {:interceptors [interceptor-get-plug]
                             :roles        #{:basic}
                             :parameters   {:path ::path-param}}}]
-       ["/plugs" {:get  {:interceptors [interceptor-find-plugs]}
+       ["/plugs" {:get  {:interceptors [interceptor-find-plugs]
+                         :roles        #{:basic}}
                   :post {:interceptors [interceptor-create-plug]
                          :roles        #{:basic}
                          :parameters   {:body ::plug-new}}}]]
@@ -155,6 +157,7 @@
                                                      (http-coercion/coerce-request-interceptor)
                                                      (http-coercion/coerce-exceptions-interceptor)
                                                      auth-interceptor
+                                                     authz-interceptor
                                                      db-interceptor
                                                      ]}})
     (ring/routes
