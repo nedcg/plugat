@@ -5,6 +5,7 @@
     [reitit.ring :as ring]
     [next.jdbc :as jdbc]
     [next.jdbc.sql :as sql]
+    [next.jdbc.quoted :as quoted]
     [next.jdbc.connection :as connection]
     [clojure.spec.alpha :as s]
     [reitit.dev.pretty :as pretty]
@@ -35,19 +36,21 @@
 
 (s/def :plug/type #{:user :search :place})
 (s/def ::type :plug/type)
-(s/def ::longitude (s/double-in :min -180.0 :max 180 :NaN false :infinite? false))
-(s/def ::latitude (s/double-in :min -90.0 :max 90 :NaN false :infinite? false))
+(s/def ::payload string?)
+(s/def ::longitude (s/double-in :min -180.0 :max 180.0 :NaN false :infinite? false))
+(s/def ::latitude (s/double-in :min -85.05112878 :max 85.05112878 :NaN false :infinite? false))
 (s/def ::coordinates (s/tuple ::longitude ::latitude))
+(s/def ::coordinates-str (s/tuple ::longitude ::latitude))
 (s/def ::created-by uuid?)
-(s/def ::plug-new (s/keys :req-un [::title ::type ::description ::coordinates ::created-by]))
-(s/def ::path-param (s/keys :req-un [::id]))
+(s/def ::plug-new (s/keys :req-un [::title ::description ::coordinates]))
+(s/def ::message-new (s/keys :req-un [::payload]
+                             :req-opt [::reply_to]))
 
 (defn gen-oid [] (.toHexString (ObjectId.)))
 
-(def ^:private datasource-options {:jdbcUrl  (env :database-url)
-                                   :username (env :database-username)
-                                   :password (env :database-password)})
+(def ^:private datasource-options {:jdbcUrl (env :database-url)})
 (defonce ds (delay (connection/->pool HikariDataSource datasource-options)))
+(defonce redis-conn {:pool {} :spec {:uri (env :redis-url)}})
 
 (defn decode-b64 [str] (String. (b64/decode (.getBytes str))))
 (defn parse-json [s]
@@ -61,7 +64,9 @@
 
 (def db-interceptor
   {:name  ::datasource
-   :enter (update % :request assoc :datasource @ds)})
+   :enter #(update % :request assoc
+                   :datasource @ds
+                   :redis-conn redis-conn)})
 
 (def auth-interceptor
   {:name ::auth
@@ -74,10 +79,11 @@
                    public-key (-> jwk-url slurp (json/parse-string keyword) :keys first keys/jwk->public-key)
                    {{:keys [sub name upn groups]} :payload} (decode token)]
                (jwt/unsign token public-key {:alg :rs256})
-               (assoc ctx :user {:id       sub
-                                 :name     name
-                                 :username upn
-                                 :roles    (into #{} (map keyword groups))}))
+               (update ctx :request
+                       assoc :user {:id       sub
+                                    :name     name
+                                    :username upn
+                                    :roles    (into #{} (map keyword groups))}))
              (catch Throwable exception
                (throw
                  (ex-info "unauthorized"
@@ -96,7 +102,7 @@
                 {:description  (str "requires roles " roles)
                  :spec         {:roles #{keyword?}}
                  :context-spec {:user {:roles #{keyword}}}
-                 :enter        (fn [{{user-roles :roles} :user :as ctx}]
+                 :enter        (fn [{{{user-roles :roles} :user} :request :as ctx}]
                                  (when-not (set/subset? roles user-roles)
                                    (throw
                                      (ex-info "forbidden"
@@ -105,24 +111,23 @@
                                                           :body   "forbidden"}})))
                                  ctx)}))})
 
-(def interceptor-create-plug
+(def create-plug
   {:name ::create-plug
    :enter
-         (fn [{{:keys [parameters datasource rconn]} :request :as ctx}]
+         (fn [{{:keys [parameters datasource]} :request :as ctx}]
            (let [id (gen-oid)
                  new-plug (merge (:body parameters) {:id id})
                  {:keys [latitude longitude]} new-plug]
              (with-open [conn (jdbc/get-connection datasource)]
                (sql/insert! conn :plugs new-plug)
-               (wcar rconn (car/geoadd id longitude latitude new-plug))
                (assoc ctx :response (response new-plug)))))})
 
-(def interceptor-get-plug
+(def get-plug
   {:name ::get-plug-by-id
    :enter
          (fn [{{:keys [parameters datasource]} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
-             (let [result (sql/get-by-id conn :plugs (get-in parameters [:path :id]))]
+             (let [result (sql/get-by-id conn :plugs (get-in parameters [:path :plug-id]))]
                (when-not (any? result)
                  (throw
                    (ex-info "not found"
@@ -131,33 +136,109 @@
                                         :body   "not found"}})))
                (assoc ctx :response (response result)))))})
 
-(def interceptor-find-plugs
+(def find-plugs
   {:name ::find-plugs
+   :enter
+         (fn [{{:keys [user datasource]} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (assoc ctx
+               :response (response
+                           (sql/find-by-keys conn :plugs {:created_by_id (:id user)}
+                                             {:table-fn (quoted/schema quoted/ansi)})))))})
+
+(def find-plugs-by-subscriptions
+  {:name ::find-plug-subscriptions
+   :enter
+         (fn [{{:keys [user datasource]} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (let [result (sql/query conn [(str "SELECT plugs.* FROM plugs "
+                                                "INNER JOIN plug_subscriptions AS s "
+                                                "ON s.plug_id=id AND s.user_id=?") (:id user)]
+                                     {:table-fn (quoted/schema quoted/ansi)})]
+               (assoc ctx :response (response result)))))})
+
+(def find-plugs-around
+  {:name ::find-plugs-around
+   :enter
+         (fn [{{:keys             [datasource redis-conn]
+                {:keys [plug-id]} :paramaters} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (let [plug-ids (wcar redis-conn (car/georadiusbymember (str :plugs) plug-id 3 (str :km)))
+                   result (sql/find-by-keys conn :plugs {:id plug-ids})]
+               (assoc ctx :response (response result)))))})
+
+(def find-messages-by-plug
+  {:name ::find-messages-by-plug
+   :enter
+         (fn [{{:keys             [datasource]
+                {:keys [plug-id]} :path-params} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (let [result (sql/find-by-keys conn :messages {:plug_id plug-id})]
+               (assoc ctx :response (response result)))))})
+
+(def find-messages-by-user
+  {:name ::find-messages-by-user
    :enter
          (fn [{{:keys [datasource user]} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
-             (assoc ctx :response (response (sql/find-by-keys conn :plugs {:created-by (:id user)})))))})
+             (let [result (sql/find-by-keys conn :messages {:created_by_id (:id user)})]
+               (assoc ctx :response (response result)))))})
 
-(def interceptor-find-plugs-around
-  {:name ::find-plugs-around
+(def put-message
+  {:name ::put-message
    :enter
-         (fn [{{:keys [datasource]} :request :as ctx}]
+         (fn [{{:keys              [datasource user]
+                {plug-id :plug-id} :path-params
+                body               :body-params} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
-             (assoc ctx :response (response (sql/query conn ["select * from plugs"])))))})
+             (let [id (gen-oid)
+                   new-message (merge body {:id              id
+                                            :plug_id         plug-id
+                                            :created_by_id   (:id user)
+                                            :created_by_name (:name user)})
+                   _ (sql/insert! conn :messages new-message)]
+               (assoc ctx :response (response new-message)))))})
+
+(def put-plug-subscription
+  {:name ::put-plug-subscribe
+   :enter
+         (fn [{{:keys             [datasource user]
+                {:keys [plug-id]} :path-params} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (sql/insert! conn :plug_subscriptions {:user_id (:id user)
+                                                    :plug_id plug-id}))
+           (assoc ctx :response (response nil)))})
 
 (def app
   (http/ring-handler
     (http/router
 
       ["/api"
-       ["/plugs/:id" {:get {:interceptors [interceptor-get-plug]
-                            :roles        #{:basic}
-                            :parameters   {:path ::path-param}}}]
-       ["/plugs" {:get  {:interceptors [interceptor-find-plugs]
-                         :roles        #{:basic}}
-                  :post {:interceptors [interceptor-create-plug]
-                         :roles        #{:basic}
-                         :parameters   {:body ::plug-new}}}]]
+       ["/plugs/:plug-id" {:get {:interceptors [get-plug]
+                                 :roles        #{:basic}
+                                 :parameters   {:path {:plug-id ::oid}}}}]
+       ["/plugs/:plug-id/around" {:get {:interceptors [find-plugs-around]
+                                        :roles        #{:basic}
+                                        :parameters   {:path  {:plug-id ::oid}
+                                                       :query {:lat ::latitude
+                                                               :lng ::longitude}}}}]
+       ["/plugs/:plug-id/subscribe" {:put {:interceptors [put-plug-subscription]
+                                           :roles        #{:basic}
+                                           :parameters   {:path {:plug-id ::oid}}}}]
+       ["/plugs/:plug-id/messages" {:get {:interceptors [find-messages-by-plug]
+                                          :roles        #{:basic}
+                                          :parameters   {:path {:plug-id ::oid}}}
+                                    :put {:interceptors [put-message]
+                                          :roles        #{:basic}
+                                          :parameters   {:path {:plug-id ::oid}
+                                                         :body ::message-new}}}]
+
+       ["/user/plugs" {:get {:interceptors [find-plugs]
+                             :roles        #{:basic}}}]
+       ["/user/plug-subscriptions" {:get {:interceptors [find-plugs-by-subscriptions]
+                                          :roles        #{:basic}}}]
+       ["/user/messages" {:get {:interceptors [find-messages-by-user]
+                                :roles        #{:basic}}}]]
 
       {:exception                    pretty/exception
        :reitit.interceptor/transform dev/print-context-diffs
@@ -169,11 +250,11 @@
                                                      (muuntaja/format-response-interceptor)
                                                      (exception/exception-interceptor)
                                                      (muuntaja/format-request-interceptor)
+                                                     auth-interceptor
+                                                     authz-interceptor
                                                      (http-coercion/coerce-response-interceptor)
                                                      (http-coercion/coerce-request-interceptor)
                                                      (http-coercion/coerce-exceptions-interceptor)
-                                                     auth-interceptor
-                                                     authz-interceptor
                                                      db-interceptor
                                                      ]}})
     (ring/routes
@@ -189,5 +270,20 @@
   (reset! server (run-jetty #'app {:port 3000, :join? false, :async true}))
   (println "server running in port 3000"))
 
+(defn index-plugs! []
+  (with-open [conn (jdbc/get-connection @ds)]
+    (let [plugs (sql/query conn ["SELECT * FROM plugs"])]
+      (wcar redis-conn
+            (mapv
+              (fn [{id        :plugs/id
+                    latitude  :plugs/latitude
+                    longitude :plugs/longitude}]
+                (car/geoadd "plugs"
+                            (.floatValue longitude)
+                            (.floatValue latitude)
+                            id))
+              plugs)))))
+
 (comment
-  (restart))
+  (restart)
+  (index-plugs!))

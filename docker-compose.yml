@@ -14,12 +14,22 @@ services:
     networks:
       - backend
 
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-data:/data
+    networks:
+      - backend
+
   plugat-api:
     build: .
     ports:
       - "3000:3000"
     depends_on:
       - postgres
+      - redis
     networks:
       - backend
 
