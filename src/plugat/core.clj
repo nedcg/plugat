@@ -26,25 +26,41 @@
     [cheshire.core :as json]
     [clojure.string :as str]
     [buddy.core.codecs.base64 :as b64]
-    [taoensso.carmine :as car :refer (wcar)])
+    [taoensso.carmine :as car :refer (wcar)]
+    [clojure.spec.gen.alpha :as gen]
+    [clojure.string :as string])
   (:import (org.bson.types ObjectId)
            (com.zaxxer.hikari HikariDataSource)))
 
 (def oid-hex-str-regex #"^[0-9a-f]{24}$")
-(s/def ::oid (s/and string? #(re-matches oid-hex-str-regex %)))
-(s/def ::id ::oid)
+(defn hex-str-gen [char-count]
+  (gen/fmap #(clojure.string/join %)
+            (gen/vector
+              (gen/elements
+                [0 1 2 3 4 5 6 7 8 9 'a 'b 'c 'd 'e 'f 'g])
+              char-count)))
 
+(s/def ::oid (s/with-gen
+               (s/and string? #(re-matches oid-hex-str-regex %))
+               #(hex-str-gen 24)))
+(s/def ::id ::oid)
 (s/def :plug/type #{:user :search :place})
 (s/def ::type :plug/type)
 (s/def ::payload string?)
 (s/def ::longitude (s/double-in :min -180.0 :max 180.0 :NaN false :infinite? false))
 (s/def ::latitude (s/double-in :min -85.05112878 :max 85.05112878 :NaN false :infinite? false))
 (s/def ::coordinates (s/tuple ::longitude ::latitude))
-(s/def ::coordinates-str (s/tuple ::longitude ::latitude))
 (s/def ::created-by uuid?)
+(s/def ::reply_to ::oid)
+(s/def ::title string?)
+(s/def ::description string?)
+(s/def ::radius (s/int-in 500 10000))
+
 (s/def ::plug-new (s/keys :req-un [::title ::description ::coordinates]))
 (s/def ::message-new (s/keys :req-un [::payload]
                              :req-opt [::reply_to]))
+(s/def ::plugs-query (s/keys :req-un [::latitude ::longitude]
+                             :req-opt [::radius]))
 
 (defn gen-oid [] (.toHexString (ObjectId.)))
 
@@ -54,7 +70,7 @@
 
 (defn decode-b64 [str] (String. (b64/decode (.getBytes str))))
 (defn parse-json [s]
-  (let [clean-str (if (str/ends-with? s "}") s (str s "}"))]
+  (let [clean-str (if (string/ends-with? s "}") s (str s "}"))]
     (json/parse-string clean-str keyword)))
 
 (defn decode [token]
@@ -141,13 +157,13 @@
    :enter
          (fn [{{:keys [user datasource]} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
-             (assoc ctx
-               :response (response
-                           (sql/find-by-keys conn :plugs {:created_by_id (:id user)}
-                                             {:table-fn (quoted/schema quoted/ansi)})))))})
+             (assoc ctx :response
+                        (response
+                          (sql/find-by-keys conn :plugs {:created_by_id (:id user)}
+                                            {:table-fn (quoted/schema quoted/ansi)})))))})
 
 (def find-plugs-by-subscriptions
-  {:name ::find-plug-subscriptions
+  {:name ::find-plug-subscriptionsfind-plugs
    :enter
          (fn [{{:keys [user datasource]} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
@@ -157,15 +173,27 @@
                                      {:table-fn (quoted/schema quoted/ansi)})]
                (assoc ctx :response (response result)))))})
 
-(def find-plugs-around
-  {:name ::find-plugs-around
+(def query-plugs
+  {:name ::query-plugs
    :enter
-         (fn [{{:keys             [datasource redis-conn]
-                {:keys [plug-id]} :paramaters} :request :as ctx}]
+         (fn [{{:keys                                        [datasource redis-conn]
+                {{:keys [radius latitude longitude]} :query} :parameters} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
-             (let [plug-ids (wcar redis-conn (car/georadiusbymember (str :plugs) plug-id 3 (str :km)))
-                   result (sql/find-by-keys conn :plugs {:id plug-ids})]
-               (assoc ctx :response (response result)))))})
+             (if-let [plug-ids (seq
+                                 (wcar redis-conn
+                                       (car/georadius
+                                         (str :plugs) longitude latitude (if (some? radius) radius 3000) :m)))]
+               (assoc ctx :response
+                          (response
+                            (sql/query
+                              conn
+                              (into []
+                                    (concat [(str "SELECT * FROM plugs "
+                                                  "WHERE id IN ("
+                                                  (string/join "," (repeat (count plug-ids) "?"))
+                                                  ")")]
+                                            plug-ids)))))
+               (assoc ctx :response (response [])))))})
 
 (def find-messages-by-plug
   {:name ::find-messages-by-plug
@@ -217,11 +245,9 @@
        ["/plugs/:plug-id" {:get {:interceptors [get-plug]
                                  :roles        #{:basic}
                                  :parameters   {:path {:plug-id ::oid}}}}]
-       ["/plugs/:plug-id/around" {:get {:interceptors [find-plugs-around]
-                                        :roles        #{:basic}
-                                        :parameters   {:path  {:plug-id ::oid}
-                                                       :query {:lat ::latitude
-                                                               :lng ::longitude}}}}]
+       ["/plugs" {:get {:interceptors [query-plugs]
+                        :roles        #{:basic}
+                        :parameters   {:query ::plugs-query}}}]
        ["/plugs/:plug-id/subscribe" {:put {:interceptors [put-plug-subscription]
                                            :roles        #{:basic}
                                            :parameters   {:path {:plug-id ::oid}}}}]
@@ -278,12 +304,22 @@
               (fn [{id        :plugs/id
                     latitude  :plugs/latitude
                     longitude :plugs/longitude}]
-                (car/geoadd "plugs"
+                (car/geoadd (str :plugs)
                             (.floatValue longitude)
                             (.floatValue latitude)
                             id))
               plugs)))))
 
+(defn delete-index-plugs! []
+  (with-open [conn (jdbc/get-connection @ds)]
+    (let [plugs (sql/query conn ["SELECT * FROM plugs"])]
+      (wcar redis-conn
+            (mapv
+              (fn [{id :plugs/id}]
+                (car/zrem (str :plugs) id))
+              plugs)))))
+
 (comment
   (restart)
-  (index-plugs!))
+  (index-plugs!)
+  (delete-index-plugs!))
