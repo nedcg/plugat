@@ -176,8 +176,8 @@
 (def query-plugs
   {:name ::query-plugs
    :enter
-         (fn [{{:keys                                        [datasource redis-conn]
-                {{:keys [radius latitude longitude]} :query} :parameters} :request :as ctx}]
+         (fn [{{:keys                               [datasource redis-conn]
+                {:strs [radius latitude longitude]} :params} :request :as ctx}]
            (with-open [conn (jdbc/get-connection datasource)]
              (if-let [plug-ids (seq
                                  (wcar redis-conn
