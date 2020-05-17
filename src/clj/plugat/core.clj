@@ -24,7 +24,6 @@
     [buddy.core.keys :as keys]
     [buddy.sign.jwt :as jwt]
     [cheshire.core :as json]
-    [clojure.string :as str]
     [buddy.core.codecs.base64 :as b64]
     [taoensso.carmine :as car :refer (wcar)]
     [clojure.spec.gen.alpha :as gen]
@@ -298,7 +297,7 @@
 
 (defn index-plugs! []
   (with-open [conn (jdbc/get-connection @ds)]
-    (let [plugs (sql/query conn ["SELECT * FROM plugs"])]
+    (let [plugs (sql/query conn [(str "SELECT * FROM " (str :plugs))])]
       (wcar redis-conn
             (mapv
               (fn [{id        :plugs/id
@@ -312,7 +311,7 @@
 
 (defn delete-index-plugs! []
   (with-open [conn (jdbc/get-connection @ds)]
-    (let [plugs (sql/query conn ["SELECT * FROM plugs"])]
+    (let [plugs (sql/query conn [(str "SELECT * FROM " (str :plugs))])]
       (wcar redis-conn
             (mapv
               (fn [{id :plugs/id}]

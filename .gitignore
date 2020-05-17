@@ -14,3 +14,16 @@ pom.xml.asc
 .idea/
 db-data/
 redis-data/
+
+/out/
+/resources/public/js/compiled/
+/target/
+/*-init.clj
+/*.log
+
+# Node.js dependencies
+/node_modules/
+
+# shadow-cljs cache, port files
+/shadow-cljs.edn
+/.shadow-cljs/

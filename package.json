@@ -1,0 +1,11 @@
+{
+  "name": "plugat",
+  "dependencies": {
+    "keycloak-js": "10.0.1",
+    "react": "16.13.0",
+    "react-dom": "16.13.0"
+  },
+  "devDependencies": {
+    "shadow-cljs": "2.9.2"
+  }
+}
