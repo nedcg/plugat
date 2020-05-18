@@ -10,7 +10,7 @@
     (.then
       (.init kc
              #js {:onLoad "login-required"})
-      (fn [] (on-load kc)))))
+      #(on-load kc))))
 
 (defn logout [auth]
   (when auth

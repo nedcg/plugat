@@ -4,16 +4,6 @@
   :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
             :url  "https://www.eclipse.org/legal/epl-2.0/"}
   :dependencies [[org.clojure/clojure "1.10.1"]
-                 [org.clojure/clojurescript "1.10.758"
-                  :exclusions [com.google.javascript/closure-compiler-unshaded
-                               org.clojure/google-closure-library
-                               org.clojure/google-closure-library-third-party]]
-                 [thheller/shadow-cljs "2.9.2"]
-                 [reagent "0.10.0"]
-                 [re-frame "0.12.0"]
-                 [re-com "2.8.0"]
-                 [day8.re-frame/http-fx "v0.2.0"]
-                 [metosin/reitit-frontend "0.4.2"]
                  [org.clojure/test.check "0.9.0"]
                  [seancorfield/next.jdbc "1.0.424"]
                  [com.zaxxer/HikariCP "3.4.4"]
@@ -21,6 +11,7 @@
                  [ring/ring-core "1.8.0"]
                  [ring/ring-devel "1.8.0"]
                  [ring/ring-jetty-adapter "1.8.0"]
+                 [ring-cors "0.1.13"]
                  [org.postgresql/postgresql "42.2.12"]
                  [environ "1.1.0"]
                  [metosin/reitit-core "0.4.2"]
@@ -29,12 +20,23 @@
                  [metosin/reitit-interceptors "0.4.2"]
                  [metosin/reitit-sieppari "0.4.2"]
                  [metosin/reitit-dev "0.4.2"]
+                 [metosin/reitit-frontend "0.4.2"]
                  [metosin/muuntaja "0.6.6"]
                  [buddy/buddy-sign "3.1.0"]
                  [org.mongodb/bson "4.1.0-beta1"]
                  [migratus "1.2.8"]
                  [org.clojure/tools.logging "1.1.0"]
-                 [ch.qos.logback/logback-classic "1.2.3"]]
+                 [ch.qos.logback/logback-classic "1.2.3"]
+                 ;; clojurescript
+                 [org.clojure/clojurescript "1.10.758"
+                  :exclusions [com.google.javascript/closure-compiler-unshaded
+                               org.clojure/google-closure-library
+                               org.clojure/google-closure-library-third-party]]
+                 [thheller/shadow-cljs "2.9.2"]
+                 [reagent "0.10.0"]
+                 [re-frame "0.12.0"]
+                 [re-com "2.8.0"]
+                 [day8.re-frame/http-fx "v0.2.0"]]
 
   :plugins [[lein-ring "0.12.5"]
             [migratus-lein "0.7.3"]

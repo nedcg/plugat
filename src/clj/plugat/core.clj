@@ -18,6 +18,7 @@
     [reitit.http.interceptors.parameters :as parameters]
     [reitit.http.interceptors.exception :as exception]
     [ring.middleware.reload :refer [wrap-reload]]
+    [ring.middleware.cors :as cors]
     [environ.core :refer [env]]
     [clojure.set :as set]
     [muuntaja.core :as m]
@@ -38,6 +39,23 @@
               (gen/elements
                 [0 1 2 3 4 5 6 7 8 9 'a 'b 'c 'd 'e 'f 'g])
               char-count)))
+
+(s/def ::allow-origin string?)
+(s/def ::allow-methods (s/coll-of keyword? :kind set?))
+(s/def ::allow-credentials boolean?)
+(s/def ::allow-headers (s/coll-of string? :kind set?))
+(s/def ::expose-headers (s/coll-of string? :kind set?))
+(s/def ::max-age nat-int?)
+(s/def ::access-control
+  (s/keys :opt-un [::allow-origin
+                   ::allow-methods
+                   ::allow-credentials
+                   ::allow-headers
+                   ::expose-headers
+                   ::max-age]))
+
+(s/def ::cors-interceptor
+  (s/keys :opt-un [::access-control]))
 
 (s/def ::oid (s/with-gen
                (s/and string? #(re-matches oid-hex-str-regex %))
@@ -82,6 +100,36 @@
    :enter #(update % :request assoc
                    :datasource @ds
                    :redis-conn redis-conn)})
+
+(def cors-interceptor
+  {:name    ::cors
+   :spec    ::access-control
+   :compile (fn [{:keys [access-control]} _]
+              (when access-control
+                (let [access-control (cors/normalize-config (mapcat identity access-control))]
+                  {:enter (fn cors-interceptor-enter
+                            [{:keys [request] :as ctx}]
+                            (if (and (cors/preflight? request)
+                                     (cors/allow-request? request access-control))
+                              (let [resp (cors/add-access-control
+                                           request
+                                           access-control
+                                           cors/preflight-complete-response)]
+                                (assoc ctx
+                                  :response resp
+                                  :queue nil))
+                              ctx))
+                   :leave (fn cors-interceptor-leave
+                            [{:keys [request response] :as ctx}]
+                            (cond-> ctx
+                                    (and (cors/origin request)
+                                         (cors/allow-request? request access-control)
+                                         response)
+                                    (assoc :response
+                                           (cors/add-access-control
+                                             request
+                                             access-control
+                                             response))))})))})
 
 (def auth-interceptor
   {:name ::auth
@@ -244,9 +292,12 @@
        ["/plugs/:plug-id" {:get {:interceptors [get-plug]
                                  :roles        #{:basic}
                                  :parameters   {:path {:plug-id ::oid}}}}]
-       ["/plugs" {:get {:interceptors [query-plugs]
-                        :roles        #{:basic}
-                        :parameters   {:query ::plugs-query}}}]
+       ["/plugs" {:get {:interceptors   [query-plugs]
+                        :roles          #{:basic}
+                        :access-control {:allow-origin      "http://localhost:8280"
+                                         :allow-methods     #{:get :post :put}
+                                         :allow-credentials true}
+                        :parameters     {:query ::plugs-query}}}]
        ["/plugs/:plug-id/subscribe" {:put {:interceptors [put-plug-subscription]
                                            :roles        #{:basic}
                                            :parameters   {:path {:plug-id ::oid}}}}]
@@ -275,6 +326,7 @@
                                                      (muuntaja/format-response-interceptor)
                                                      (exception/exception-interceptor)
                                                      (muuntaja/format-request-interceptor)
+                                                     cors-interceptor
                                                      auth-interceptor
                                                      authz-interceptor
                                                      (http-coercion/coerce-response-interceptor)

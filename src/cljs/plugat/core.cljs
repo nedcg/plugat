@@ -8,7 +8,7 @@
     [plugat.views :as views]
     [plugat.config :as config]
     [plugat.auth :as auth]
-    ))
+    [plugat.geolocation :as geolocation]))
 
 (defn dev-setup []
   (when config/debug?
@@ -21,13 +21,13 @@
     (rdom/unmount-component-at-node root-el)
     (rdom/render [views/main-layout {:router views/router}] root-el)))
 
-(defn init-auth [on-load]
-  (auth/init on-load))
-
-(defn init []
-  (init-auth
+(defn ^:export init []
+  (dev-setup)
+  (auth/init
     (fn [auth]
       (re-frame/dispatch-sync [::events/initialize-db])
       (re-frame/dispatch-sync [::events/initialize-auth auth])
-      (dev-setup)
-      (mount-root))))
+      (geolocation/get-current-location
+        (fn [lng lat]
+          (re-frame/dispatch [::events/set-current-location lng lat])
+          (mount-root))))))

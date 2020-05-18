@@ -3,7 +3,6 @@
     [re-frame.core :as re-frame]
     [re-com.core :as re-com]
     [plugat.events :as events]
-    [plugat.auth :as auth]
     [reitit.core :as r]
     [reitit.frontend.easy :as rfe]
     [reitit.coercion.spec :as rss]
@@ -64,11 +63,50 @@
 
 (defn settings-page []
   [:div
-   [:h1 "This is sub-page 1"]])
+   [:h1 "settings"]])
+
+(defn plug-card [{:keys [description]}]
+  [:div.card.mt-2
+   [:div.card-body
+    [:p.card-text
+     description]]])
+
+(defn explore-section [& {:keys [title]}]
+  [re-com/scroller
+   :v-scroll :auto
+   :child [re-com/box
+           :size "1"
+           :class "p-4"
+           :child (let [plugs @(re-frame/subscribe [::events/plugs-around])]
+                    [:div.card.w-100
+                     [:div.card-header title]
+                     [:div.card-body
+                      [re-com/v-box
+                       :children (for [plug plugs]
+                                   [plug-card {:description (:plugs/description plug)}])]]])]])
+
+(defn explorer-views [location]
+  [re-com/h-box
+   :children [[explore-section
+               :title "Around you"]
+              [explore-section
+               :title "Trending"]]])
 
 (defn explore-page []
-  [:div
-   [:h1 "This is sub-page 1"]])
+  (let [location @(re-frame/subscribe [::events/current-location])]
+    (if (some? location)
+      [explorer-views location]
+      [re-com/modal-panel
+       :wrap-nicely? false
+       :child [:div.card
+               [:div.card-body
+                [:h5.card-title
+                 "Location required"]
+                [:p.card-text
+                 "Please provide a location"]
+                [:button.btn.btn-primary
+                 {:on-click #(re-frame/dispatch [::events/navigate ::settings])}
+                 "Go to settings"]]]])))
 
 ;;; Routes ;;;
 
@@ -84,21 +122,21 @@
 (def routes
   ["/"
    [""
-    {:name      ::console
-     :view      console-page
-     :link-text "Console"
-     :controllers
-                [{:start (fn [& params]
-                           (js/console.log "Entering console")
-                           (re-frame/dispatch [::events/fetch-plugs-around]))
-                  :stop  (fn [& params] (js/console.log "Leaving console"))}]}]
-   ["explore"
     {:name      ::explore
      :view      explore-page
      :link-text "Explore"
      :controllers
-                [{:start (fn [& params] (js/console.log "Entering explore"))
+                [{:start (fn [& params]
+                           (re-frame/dispatch [::events/fetch-plugs-around])
+                           (js/console.log "Entering explore"))
                   :stop  (fn [& params] (js/console.log "Leaving explore"))}]}]
+   ["console"
+    {:name      ::console
+     :view      console-page
+     :link-text "Console"
+     :controllers
+                [{:start (fn [& params] (js/console.log "Entering console"))
+                  :stop  (fn [& params] (js/console.log "Leaving console"))}]}]
    ["settings"
     {:name      ::settings
      :view      settings-page
