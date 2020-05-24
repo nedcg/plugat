@@ -12,6 +12,9 @@
              #js {:onLoad "login-required"})
       #(on-load kc))))
 
+(defn token [auth]
+  (.-token auth))
+
 (defn logout [auth]
   (when auth
     (.logout auth)))

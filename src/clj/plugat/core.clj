@@ -18,7 +18,7 @@
     [reitit.http.interceptors.parameters :as parameters]
     [reitit.http.interceptors.exception :as exception]
     [ring.middleware.reload :refer [wrap-reload]]
-    [ring.middleware.cors :as cors]
+    [ring.middleware.cors :refer [wrap-cors] :as cors]
     [environ.core :refer [env]]
     [clojure.set :as set]
     [muuntaja.core :as m]
@@ -28,7 +28,9 @@
     [buddy.core.codecs.base64 :as b64]
     [taoensso.carmine :as car :refer (wcar)]
     [clojure.spec.gen.alpha :as gen]
-    [clojure.string :as string])
+    [clojure.string :as string]
+    [clojure.string :as str]
+    [clojure.tools.logging :as log])
   (:import (org.bson.types ObjectId)
            (com.zaxxer.hikari HikariDataSource)))
 
@@ -101,59 +103,91 @@
                    :datasource @ds
                    :redis-conn redis-conn)})
 
+(defn add-access-control-methods [access-control methods]
+  (if (nil? (-> access-control :access-control-allow-methods seq))
+    (assoc access-control :access-control-allow-methods methods)
+    access-control))
+
+(def custom-options-handler
+  (let [handle (fn [request]
+                 (let [methods (->> request reitit.ring/get-match :result (keep (fn [[k v]] (if v k))))
+                       request-method (-> request
+                                          :headers
+                                          (get "access-control-request-method" "none")
+                                          string/lower-case
+                                          keyword)
+                       access-control (-> request
+                                          reitit.ring/get-match
+                                          :result
+                                          (get request-method)
+                                          :data
+                                          :access-control)
+                       access-control (cors/normalize-config (mapcat identity access-control))
+                       allow (->> methods (map (comp str/upper-case name)) (str/join ","))
+                       resp {:status 204 :body "" :headers {"Allow" allow}}]
+                   (if (cors/allow-request? request access-control)
+                     (cors/add-access-control request access-control resp)
+                     resp)))]
+    (fn
+      ([request]
+       (handle request))
+      ([request respond _]
+       (respond (handle request))))))
+
 (def cors-interceptor
   {:name    ::cors
    :spec    ::access-control
    :compile (fn [{:keys [access-control]} _]
               (when access-control
                 (let [access-control (cors/normalize-config (mapcat identity access-control))]
-                  {:enter (fn cors-interceptor-enter
-                            [{:keys [request] :as ctx}]
-                            (if (and (cors/preflight? request)
-                                     (cors/allow-request? request access-control))
-                              (let [resp (cors/add-access-control
-                                           request
-                                           access-control
-                                           cors/preflight-complete-response)]
-                                (assoc ctx
-                                  :response resp
-                                  :queue nil))
-                              ctx))
-                   :leave (fn cors-interceptor-leave
-                            [{:keys [request response] :as ctx}]
-                            (cond-> ctx
-                                    (and (cors/origin request)
-                                         (cors/allow-request? request access-control)
-                                         response)
-                                    (assoc :response
-                                           (cors/add-access-control
-                                             request
-                                             access-control
-                                             response))))})))})
+                  {
+                   ;:enter
+                   ;(fn cors-interceptor-enter
+                   ;  [{:keys [request] :as ctx}]
+                   ;  (if (and (cors/allow-request? request access-control))
+                   ;    (assoc ctx :queue nil
+                   ;               :response (cors/add-access-control
+                   ;                           request
+                   ;                           access-control
+                   ;                           cors/preflight-complete-response))
+                   ;    ctx))
+                   :leave
+                   (fn cors-interceptor-leave
+                     [{:keys [request response] :as ctx}]
+                     (cond-> ctx
+                             (and (cors/origin request)
+                                  (cors/allow-request? request access-control)
+                                  response)
+                             (assoc :response
+                                    (cors/add-access-control
+                                      request
+                                      access-control
+                                      response))))})))})
 
 (def auth-interceptor
   {:name ::auth
    :enter
-         (fn [{{:keys [headers]} :request :as ctx}]
-           (try
-             (let [token-str (get headers "authorization")
-                   [_ token] (clojure.string/split token-str #" ")
-                   jwk-url (env :jwk-url)
-                   public-key (-> jwk-url slurp (json/parse-string keyword) :keys first keys/jwk->public-key)
-                   {{:keys [sub name upn groups]} :payload} (decode token)]
-               (jwt/unsign token public-key {:alg :rs256})
-               (update ctx :request
-                       assoc :user {:id       sub
-                                    :name     name
-                                    :username upn
-                                    :roles    (into #{} (map keyword groups))}))
-             (catch Throwable exception
-               (throw
-                 (ex-info "unauthorized"
-                          {:type     :reitit.ring/response
-                           :response {:status 401
-                                      :body   "unauthorized"}}
-                          exception)))))})
+         (fn [{{:keys [headers request-method]} :request :as ctx}]
+           (if (= request-method :options)
+             ctx
+             (try
+               (let [token-str (get headers "authorization")
+                     [_ token] (clojure.string/split token-str #" ")
+                     jwk-url (env :jwk-url)
+                     public-key (-> jwk-url slurp (json/parse-string keyword) :keys first keys/jwk->public-key)
+                     {{:keys [sub name upn groups]} :payload} (decode token)]
+                 (jwt/unsign token public-key {:alg :rs256})
+                 (update ctx :request
+                         assoc :user {:id       sub
+                                      :name     name
+                                      :username upn
+                                      :roles    (into #{} (map keyword groups))}))
+               (catch Throwable exception
+                 (throw
+                   (ex-info "unauthorized"
+                            {:type     :reitit.ring/response
+                             :response {:status 401 :body "unauthorized"}}
+                            exception))))))})
 
 (def authz-interceptor
   "Interceptor that mounts itself if route has `:roles` data. Expects `:roles`
@@ -282,7 +316,24 @@
            (with-open [conn (jdbc/get-connection datasource)]
              (sql/insert! conn :plug_subscriptions {:user_id (:id user)
                                                     :plug_id plug-id}))
-           (assoc ctx :response (response nil)))})
+           (assoc ctx :response {:status 204 :body ""}))})
+
+(def delete-plug-subscription
+  {:name ::delete-plug-subscribe
+   :enter
+         (fn [{{:keys             [datasource user]
+                {:keys [plug-id]} :path-params} :request :as ctx}]
+           (with-open [conn (jdbc/get-connection datasource)]
+             (sql/delete! conn :plug_subscriptions {:user_id (:id user)
+                                                    :plug_id plug-id}))
+           (assoc ctx :response {:status 204 :body ""}))})
+
+(defn access-control-default [& {:keys [allow-methods]
+                                 :or   {allow-methods [:options]}}]
+  {:access-control-allow-origin      #"http://localhost:8280"
+   :access-control-allow-headers     ["authorization" "cookie" "content-type"]
+   :access-control-allow-methods     allow-methods
+   :access-control-allow-credentials "true"})
 
 (def app
   (http/ring-handler
@@ -294,46 +345,59 @@
                                  :parameters   {:path {:plug-id ::oid}}}}]
        ["/plugs" {:get {:interceptors   [query-plugs]
                         :roles          #{:basic}
-                        :access-control {:allow-origin      "http://localhost:8280"
-                                         :allow-methods     #{:get :post :put}
-                                         :allow-credentials true}
-                        :parameters     {:query ::plugs-query}}}]
-       ["/plugs/:plug-id/subscribe" {:put {:interceptors [put-plug-subscription]
-                                           :roles        #{:basic}
-                                           :parameters   {:path {:plug-id ::oid}}}}]
-       ["/plugs/:plug-id/messages" {:get {:interceptors [find-messages-by-plug]
-                                          :roles        #{:basic}
-                                          :parameters   {:path {:plug-id ::oid}}}
-                                    :put {:interceptors [put-message]
-                                          :roles        #{:basic}
-                                          :parameters   {:path {:plug-id ::oid}
-                                                         :body ::message-new}}}]
+                        :parameters     {:query ::plugs-query}
+                        :access-control (access-control-default
+                                          :allow-methods [:options :get])}}]
+       ["/plugs/:plug-id/subscription" {:put    {:interceptors   [put-plug-subscription]
+                                                 :roles          #{:basic}
+                                                 :access-control (access-control-default
+                                                                   :allow-methods [:options :put])
+                                                 :parameters     {:path {:plug-id ::oid}}}
+                                        :delete {:interceptors   [delete-plug-subscription]
+                                                 :roles          #{:basic}
+                                                 :access-control (access-control-default
+                                                                   :allow-methods [:options :delete])
+                                                 :parameters     {:path {:plug-id ::oid}}}}]
+       ["/plugs/:plug-id/messages" {:get {:interceptors   [find-messages-by-plug]
+                                          :roles          #{:basic}
+                                          :access-control (access-control-default
+                                                            :allow-methods [:options :get])
+                                          :parameters     {:path {:plug-id ::oid}}}
+                                    :put {:interceptors   [put-message]
+                                          :roles          #{:basic}
+                                          :access-control (access-control-default
+                                                            :allow-methods [:options :put])
+                                          :parameters     {:path {:plug-id ::oid}
+                                                           :body ::message-new}}}]
 
        ["/user/plugs" {:get {:interceptors [find-plugs]
                              :roles        #{:basic}}}]
-       ["/user/plug-subscriptions" {:get {:interceptors [find-plugs-by-subscriptions]
-                                          :roles        #{:basic}}}]
+       ["/user/plug-subscriptions" {:get {:interceptors   [find-plugs-by-subscriptions]
+                                          :roles          #{:basic}
+                                          :access-control (access-control-default
+                                                            :allow-methods [:options :get])}}]
        ["/user/messages" {:get {:interceptors [find-messages-by-user]
                                 :roles        #{:basic}}}]]
 
-      {:exception                    pretty/exception
-       :reitit.interceptor/transform dev/print-context-diffs
-       :data                         {:coercion     reitit.coercion.spec/coercion
-                                      :muuntaja     m/instance
-                                      :interceptors [
-                                                     (parameters/parameters-interceptor)
-                                                     (muuntaja/format-negotiate-interceptor)
-                                                     (muuntaja/format-response-interceptor)
-                                                     (exception/exception-interceptor)
-                                                     (muuntaja/format-request-interceptor)
-                                                     cors-interceptor
-                                                     auth-interceptor
-                                                     authz-interceptor
-                                                     (http-coercion/coerce-response-interceptor)
-                                                     (http-coercion/coerce-request-interceptor)
-                                                     (http-coercion/coerce-exceptions-interceptor)
-                                                     db-interceptor
-                                                     ]}})
+      {:exception                     pretty/exception
+       ;:reitit.interceptor/transform  dev/print-context-diffs
+       :data                          {:coercion     reitit.coercion.spec/coercion
+                                       :muuntaja     m/instance
+                                       :interceptors [
+                                                      cors-interceptor
+                                                      (parameters/parameters-interceptor)
+                                                      (muuntaja/format-negotiate-interceptor)
+                                                      (muuntaja/format-response-interceptor)
+                                                      (exception/exception-interceptor)
+                                                      (muuntaja/format-request-interceptor)
+                                                      auth-interceptor
+                                                      authz-interceptor
+                                                      (http-coercion/coerce-response-interceptor)
+                                                      (http-coercion/coerce-request-interceptor)
+                                                      (http-coercion/coerce-exceptions-interceptor)
+                                                      db-interceptor
+                                                      ]}
+       ::http/default-options-handler custom-options-handler})
     (ring/routes
       (ring/create-default-handler))
     {:executor sieppari/executor}))

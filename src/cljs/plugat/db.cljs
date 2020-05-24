@@ -1,7 +1,10 @@
 (ns plugat.db)
 
 (def default-db
-  {:current-route    nil
-   :current-location nil
-   :auth             nil                                    ;; keycloak object
-   })
+  {:auth                  nil                               ;; keycloak object
+   :current-route         nil
+   :current-location      nil
+   :current-plug          nil
+   :current-plug-messages []
+   :plugs-around          []
+   :plugs-subscribed      []})

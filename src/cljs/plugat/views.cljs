@@ -9,48 +9,61 @@
     [reitit.frontend :as rf]))
 
 (defn sidebar-plugs []
-  [re-com/v-box
-   :class "list-group rounded-0"
-   :style {:width "100%"}
-   :children (for [c (range 0 35)]
-               [re-com/button
-                :class "list-group-item list-group-item-action border-0 rounded-0"
-                :label (str "Plug " c)])])
+  (let [plugs @(re-frame/subscribe [::events/plugs-subscribed])]
+    [re-com/v-box
+     :class "list-group rounded-0"
+     :style {:width "100%"}
+     :children (for [plug plugs]
+                 [re-com/button
+                  :class "list-group-item list-group-item-action border-0 rounded-0"
+                  :on-click #(re-frame/dispatch [::events/fetch-current-plug-messages plug])
+                  :label (:plugs/description plug)])]))
 
-(defn simple-post [{:keys [content]}]
+(defn button-subscribe [& {:keys [plug-id]}]
+  (let [subscriptions @(re-frame/subscribe [::events/plugs-subscribed])
+        subscription-ids (->> subscriptions (map :plugs/id) (into #{}))
+        subscribed? (contains? subscription-ids plug-id)]
+    [:button.btn.btn-primary
+     {:class    (when subscribed? :active)
+      :on-click #(if subscribed?
+                   (re-frame/dispatch [::events/put-plugs-unsubscribe plug-id])
+                   (re-frame/dispatch [::events/put-plugs-subscribe plug-id]))}
+     (if subscribed? "Unsubscribe" "Subscribe")]))
+
+(defn simple-post [message]
   [re-com/box
    :class "card mb-2"
-   :child [:div.card-body content]])
+   :child [:div.card-body (:messages/payload message)]])
 
-(defn post-feed []
-  [re-com/scroller
-   :v-scroll :auto
-   :child [re-com/v-box
-           :class "p-4"
-           :size "1"
-           :children (for [c (range 10)]
-                       [simple-post {:content "text 1"}])]])
+(defn post-feed [plug]
+  (let [messages @(re-frame/subscribe [::events/current-plug-messages])]
+    [re-com/scroller
+     :v-scroll :auto
+     :child [re-com/v-box
+             :class "p-4"
+             :size "1"
+             :children (for [message messages]
+                         [simple-post message])]]))
 
-(defn toolbar []
+(defn toolbar [plug]
   [re-com/h-box
    :class "my-2"
-   :children [[re-com/button
-               :class "btn-secondary"
-               :label "Subscribe"]
+   :children [[button-subscribe :plug-id (:plugs/id plug)]
               [re-com/gap :size "0.5rem"]
               [re-com/button
                :class "btn-primary"
                :label "Post"]]])
 
 (defn post-view []
-  [re-com/v-box
-   :size "4"
-   :class "bg-light px-2"
-   :children [[toolbar]
-              [re-com/box
-               :size "1"
-               :class "border rounded bg-white"
-               :child [post-feed]]]])
+  (let [plug @(re-frame/subscribe [::events/current-plug])]
+    [re-com/v-box
+     :size "4"
+     :class "bg-light px-2"
+     :children [[toolbar plug]
+                [re-com/box
+                 :size "1"
+                 :class "border rounded bg-white"
+                 :child [post-feed plug]]]]))
 
 (defn console-page []
   [re-com/h-box
@@ -65,32 +78,29 @@
   [:div
    [:h1 "settings"]])
 
-(defn plug-card [{:keys [description]}]
+(defn plug-card [plug]
   [:div.card.mt-2
    [:div.card-body
     [:p.card-text
-     description]]])
+     (:plugs/description plug)]
+    [button-subscribe :plug-id (:plugs/id plug)]]])
 
 (defn explore-section [& {:keys [title]}]
-  [re-com/scroller
-   :v-scroll :auto
-   :child [re-com/box
-           :size "1"
-           :class "p-4"
-           :child (let [plugs @(re-frame/subscribe [::events/plugs-around])]
-                    [:div.card.w-100
-                     [:div.card-header title]
-                     [:div.card-body
-                      [re-com/v-box
-                       :children (for [plug plugs]
-                                   [plug-card {:description (:plugs/description plug)}])]]])]])
+  [re-com/box
+   :size "1"
+   :class "p-4"
+   :child (let [plugs @(re-frame/subscribe [::events/plugs-around])]
+            [:div.card.w-100
+             [:div.card-header title]
+             [re-com/scroller
+              :class "card-body"
+              :child [re-com/v-box
+                      :children (for [plug plugs]
+                                  [plug-card plug])]]])])
 
 (defn explorer-views [location]
   [re-com/h-box
-   :children [[explore-section
-               :title "Around you"]
-              [explore-section
-               :title "Trending"]]])
+   :children [[explore-section :title "Around you"]]])
 
 (defn explore-page []
   (let [location @(re-frame/subscribe [::events/current-location])]
@@ -128,6 +138,7 @@
      :controllers
                 [{:start (fn [& params]
                            (re-frame/dispatch [::events/fetch-plugs-around])
+                           (re-frame/dispatch [::events/fetch-plugs-subscribed])
                            (js/console.log "Entering explore"))
                   :stop  (fn [& params] (js/console.log "Leaving explore"))}]}]
    ["console"
@@ -135,7 +146,9 @@
      :view      console-page
      :link-text "Console"
      :controllers
-                [{:start (fn [& params] (js/console.log "Entering console"))
+                [{:start (fn [& params]
+                           (re-frame/dispatch [::events/fetch-plugs-subscribed])
+                           (js/console.log "Entering console"))
                   :stop  (fn [& params] (js/console.log "Leaving console"))}]}]
    ["settings"
     {:name      ::settings

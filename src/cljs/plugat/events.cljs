@@ -33,26 +33,98 @@
 
 (re-frame/reg-event-db
   ::set-plugs-around
-  (fn [db [e plugs]]
-    (println "plugs-around" e plugs)
+  (fn [db [_ plugs]]
     (assoc db :plugs-around plugs)))
 
 (re-frame/reg-event-db
-  ::error-report
-  (fn [_ [_ failure]]
-    (println "failure" failure)))
+  ::set-current-plug-messages
+  (fn [db [_ messages]]
+    (assoc db :current-plug-messages messages)))
+
+(re-frame/reg-event-db
+  ::set-plugs-subscribed
+  (fn [db [_ plugs]]
+    (assoc db :plugs-subscribed plugs)))
+
+(re-frame/reg-event-db
+  ::set-current-plug
+  (fn [db [_ plugs]]
+    (assoc db :current-plug plugs)))
+
+(re-frame/reg-event-fx
+  ::print-error
+  (fn [{db :db} [_ {:keys [status] :as failure}]]
+    (*print-err-fn* status failure)
+    (if (= status 401)
+      {::logout! (:auth db)}
+      {})))
 
 (re-frame/reg-event-fx
   ::fetch-plugs-around
-  (fn [{{[lng lat] :current-location} :db} _]
-    {:http-xhrio {:method          :get
-                  :uri             "http://localhost:3000/api/plugs"
-                  :params          {:latitude lat :longitude lng}
-                  :timeout         8000                     ;; optional see API docs
-                  :format          (ajax/transit-request-format)
-                  :response-format (ajax/transit-response-format {:keywords? true})
-                  :on-success      [::set-plugs-around]
-                  :on-failure      [::error-report]}}))
+  (fn [{{[lng lat] :current-location
+         auth      :auth} :db} _]
+    {:http-xhrio {:method           :get
+                  :uri              "http://localhost:3000/api/plugs"
+                  :params           {:latitude lat :longitude lng}
+                  :headers          {"authorization" (str "Bearer " (auth/token auth))}
+                  :timeout          8000
+                  :format           (ajax/transit-request-format)
+                  :response-format  (ajax/transit-response-format {:keywords? true})
+                  :with-credentials true
+                  :on-success       [::set-plugs-around]
+                  :on-failure       [::print-error]}}))
+
+(re-frame/reg-event-fx
+  ::fetch-current-plug-messages
+  (fn [{{auth :auth} :db} [_ {id :plugs/id}]]
+    {:http-xhrio {:method           :get
+                  :uri              (str "http://localhost:3000/api/plugs/" id "/messages")
+                  :headers          {"authorization" (str "Bearer " (auth/token auth))}
+                  :timeout          8000
+                  :format           (ajax/transit-request-format)
+                  :response-format  (ajax/transit-response-format {:keywords? true})
+                  :with-credentials true
+                  :on-success       [::set-current-plug-messages]
+                  :on-failure       [::print-error]}}))
+
+(re-frame/reg-event-fx
+  ::fetch-plugs-subscribed
+  (fn [{{auth :auth} :db} _]
+    {:http-xhrio {:method           :get
+                  :uri              "http://localhost:3000/api/user/plug-subscriptions"
+                  :headers          {"authorization" (str "Bearer " (auth/token auth))}
+                  :timeout          8000
+                  :format           (ajax/transit-request-format)
+                  :response-format  (ajax/transit-response-format {:keywords? true})
+                  :with-credentials true
+                  :on-success       [::set-plugs-subscribed]
+                  :on-failure       [::print-error]}}))
+
+(re-frame/reg-event-fx
+  ::put-plugs-subscribe
+  (fn [{{auth :auth} :db} [_ plug-id]]
+    {:http-xhrio {:method           :put
+                  :uri              (str "http://localhost:3000/api/plugs/" plug-id "/subscription")
+                  :headers          {"authorization" (str "Bearer " (auth/token auth))}
+                  :timeout          8000
+                  :format           (ajax/transit-request-format)
+                  :response-format  (ajax/transit-response-format {:keywords? true})
+                  :with-credentials true
+                  :on-success       [::fetch-plugs-subscribed]
+                  :on-failure       [::print-error]}}))
+
+(re-frame/reg-event-fx
+  ::put-plugs-unsubscribe
+  (fn [{{auth :auth} :db} [_ plug-id]]
+    {:http-xhrio {:method           :delete
+                  :uri              (str "http://localhost:3000/api/plugs/" plug-id "/subscription")
+                  :headers          {"authorization" (str "Bearer " (auth/token auth))}
+                  :timeout          8000
+                  :format           (ajax/transit-request-format)
+                  :response-format  (ajax/transit-response-format {:keywords? true})
+                  :with-credentials true
+                  :on-success       [::fetch-plugs-subscribed]
+                  :on-failure       [::print-error]}}))
 
 (re-frame/reg-event-fx
   ::navigate
