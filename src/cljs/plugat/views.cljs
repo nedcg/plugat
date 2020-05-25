@@ -8,16 +8,12 @@
     [reitit.coercion.spec :as rss]
     [reitit.frontend :as rf]))
 
-(defn sidebar-plugs []
-  (let [plugs @(re-frame/subscribe [::events/plugs-subscribed])]
-    [re-com/v-box
-     :class "list-group rounded-0"
-     :style {:width "100%"}
-     :children (for [plug plugs]
-                 [re-com/button
-                  :class "list-group-item list-group-item-action border-0 rounded-0"
-                  :on-click #(re-frame/dispatch [::events/fetch-current-plug-messages plug])
-                  :label (:plugs/description plug)])]))
+(defn center-message [child]
+  [re-com/box
+   :size "1"
+   :align :center
+   :justify :center
+   :child child])
 
 (defn button-subscribe [& {:keys [plug-id]}]
   (let [subscriptions @(re-frame/subscribe [::events/plugs-subscribed])
@@ -25,9 +21,10 @@
         subscribed? (contains? subscription-ids plug-id)]
     [:button.btn.btn-primary
      {:class    (when subscribed? :active)
-      :on-click #(if subscribed?
-                   (re-frame/dispatch [::events/put-plugs-unsubscribe plug-id])
-                   (re-frame/dispatch [::events/put-plugs-subscribe plug-id]))}
+      :on-click (fn [_]
+                  (if subscribed?
+                    (re-frame/dispatch [::events/put-plugs-unsubscribe plug-id])
+                    (re-frame/dispatch [::events/put-plugs-subscribe plug-id])))}
      (if subscribed? "Unsubscribe" "Subscribe")]))
 
 (defn simple-post [message]
@@ -35,72 +32,99 @@
    :class "card mb-2"
    :child [:div.card-body (:messages/payload message)]])
 
-(defn post-feed [plug]
-  (let [messages @(re-frame/subscribe [::events/current-plug-messages])]
-    [re-com/scroller
-     :v-scroll :auto
-     :child [re-com/v-box
-             :class "p-4"
-             :size "1"
-             :children (for [message messages]
-                         [simple-post message])]]))
+(defn post-feed [messages]
+  [re-com/v-box
+   :size "1"
+   :class "p-4 border rounded bg-white"
+   :children (for [message messages]
+               [simple-post message])])
 
 (defn toolbar [plug]
-  [re-com/h-box
-   :class "my-2"
-   :children [[button-subscribe :plug-id (:plugs/id plug)]
-              [re-com/gap :size "0.5rem"]
-              [re-com/button
-               :class "btn-primary"
-               :label "Post"]]])
-
-(defn post-view []
-  (let [plug @(re-frame/subscribe [::events/current-plug])]
+  (let [post-open @(re-frame/subscribe [::events/is-post-open?])
+        post-payload (re-frame/subscribe [::events/post-payload])]
     [re-com/v-box
-     :size "4"
-     :class "bg-light px-2"
-     :children [[toolbar plug]
-                [re-com/box
-                 :size "1"
-                 :class "border rounded bg-white"
-                 :child [post-feed plug]]]]))
+     :class "my-2"
+     :children [[re-com/h-box
+                 :class "my-2"
+                 :children [[button-subscribe :plug-id (:plugs/id plug)]
+                            [re-com/gap :size "0.5rem"]
+                            [re-com/button
+                             :class (str "btn-primary" (when post-open " active"))
+                             :on-click #(re-frame/dispatch [::events/set-is-post-open? (not post-open)])
+                             :label "New Post"]]]
+                [re-com/h-box
+                 :class (when (not post-open) "collapse")
+                 :children [[re-com/input-textarea
+                             :model post-payload
+                             :on-change #(re-frame/dispatch [::events/set-post-payload (-> % .-target .-value)])]
+                            ]]]]))
+
+(defn sidebar-plugs [current-plug]
+  (let [plugs @(re-frame/subscribe [::events/plugs-subscribed])]
+    [re-com/v-box
+     :size "1"
+     :class "list-group rounded-0"
+     :children (for [plug plugs]
+                 [re-com/button
+                  :class (str "list-group-item list-group-item-action border-0 rounded-0"
+                              (when (= (:plugs/id current-plug) (:plugs/id plug)) " active"))
+                  :on-click (fn [_]
+                              (re-frame/dispatch [::events/set-current-plug plug])
+                              (re-frame/dispatch [::events/fetch-current-plug-messages plug]))
+                  :label (:plugs/description plug)])]))
+
+(defn post-view [plug]
+  (let [messages @(re-frame/subscribe [::events/current-plug-messages])]
+    (if (seq messages)
+      [re-com/v-box
+       :size "1"
+       :class "bg-light px-2"
+       :children [[toolbar plug]
+                  [post-feed messages]]]
+      [center-message
+       [re-com/v-box
+        :children [[:p "There is no posts yet"]
+                   [:button.btn.btn-primary
+                    {:on-click #(re-frame/dispatch [::events/navigate ::settings])}
+                    "Post"]]]])))
 
 (defn console-page []
-  [re-com/h-box
-   :children [[re-com/box
-               :size "1"
-               :child [sidebar-plugs]]
-              [re-com/box
-               :size "3"
-               :child [post-view]]]])
+  (let [current-plug @(re-frame/subscribe [::events/current-plug])]
+    [re-com/h-box
+     :size "1"
+     :height "100%"
+     :children [[sidebar-plugs current-plug]
+                [re-com/box
+                 :size "4"
+                 :child (if (some? current-plug)
+                          [post-view current-plug]
+                          [center-message "Please select a plug from the side panel"])]]]))
 
 (defn settings-page []
   [:div
    [:h1 "settings"]])
 
 (defn plug-card [plug]
-  [:div.card.mt-2
+  [:div.card.m-2
    [:div.card-body
     [:p.card-text
      (:plugs/description plug)]
     [button-subscribe :plug-id (:plugs/id plug)]]])
 
 (defn explore-section [& {:keys [title]}]
-  [re-com/box
-   :size "1"
-   :class "p-4"
-   :child (let [plugs @(re-frame/subscribe [::events/plugs-around])]
-            [:div.card.w-100
+  (let [plugs @(re-frame/subscribe [::events/plugs-around])]
+    [re-com/box
+     :class "p-4"
+     :child [:div.card.w-100
              [:div.card-header title]
-             [re-com/scroller
-              :class "card-body"
-              :child [re-com/v-box
-                      :children (for [plug plugs]
-                                  [plug-card plug])]]])])
+             [re-com/v-box
+              :children (for [plug plugs]
+                          [plug-card plug])]]]))
 
 (defn explorer-views [location]
-  [re-com/h-box
-   :children [[explore-section :title "Around you"]]])
+  [re-com/box
+   :size "1"
+   :child [explore-section :title "Around you"]])
 
 (defn explore-page []
   (let [location @(re-frame/subscribe [::events/current-location])]
@@ -194,5 +218,8 @@
 (defn main-layout [{:keys [router]}]
   (let [current-route @(re-frame/subscribe [::events/current-route])]
     [re-com/v-box
-     :children [[navbar {:router router :current-route current-route}]
+     :height "inherit"
+     :children [[re-com/box
+                 :size "0 1 auto"
+                 :child [navbar {:router router :current-route current-route}]]
                 (when current-route [(-> current-route :data :view)])]]))

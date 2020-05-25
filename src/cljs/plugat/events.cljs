@@ -32,6 +32,16 @@
     (assoc db :current-location [lng lat])))
 
 (re-frame/reg-event-db
+  ::set-is-post-open?
+  (fn [db [_ is-post-open]]
+    (assoc db :is-post-open? is-post-open)))
+
+(re-frame/reg-event-db
+  ::set-post-payload
+  (fn [db [_ payload]]
+    (assoc db :post-payload payload)))
+
+(re-frame/reg-event-db
   ::set-plugs-around
   (fn [db [_ plugs]]
     (assoc db :plugs-around plugs)))
@@ -48,8 +58,13 @@
 
 (re-frame/reg-event-db
   ::set-current-plug
-  (fn [db [_ plugs]]
-    (assoc db :current-plug plugs)))
+  (fn [db [_ plug]]
+    (assoc db :current-plug plug)))
+
+(re-frame/reg-event-db
+  ::unset-current-plug
+  (fn [db _]
+    (assoc db :current-plug nil)))
 
 (re-frame/reg-event-fx
   ::print-error
@@ -123,7 +138,7 @@
                   :format           (ajax/transit-request-format)
                   :response-format  (ajax/transit-response-format {:keywords? true})
                   :with-credentials true
-                  :on-success       [::fetch-plugs-subscribed]
+                  :on-success       [::fetch-plugs-subscribed ::unset-current-plug]
                   :on-failure       [::print-error]}}))
 
 (re-frame/reg-event-fx
