@@ -3,7 +3,7 @@
     [reagent.core :as reagent]
     [reagent.dom :as rdom]
     [re-frame.core :as re-frame]
-    [plugat.subs :as subs]
+    [plugat.subs]
     [plugat.events :as events]
     [plugat.views :as views]
     [plugat.config :as config]
@@ -27,7 +27,8 @@
     (fn [auth]
       (re-frame/dispatch-sync [::events/initialize-db])
       (re-frame/dispatch-sync [::events/initialize-auth auth])
+      (mount-root)
       (geolocation/get-current-location
         (fn [lng lat]
           (re-frame/dispatch [::events/set-current-location lng lat])
-          (mount-root))))))
+          (re-frame/dispatch [::events/fetch-plugs-around]))))))

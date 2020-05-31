@@ -19,11 +19,6 @@
     (:current-plug db)))
 
 (re-frame/reg-sub
-  ::events/is-post-open?
-  (fn [db]
-    (:is-post-open? db)))
-
-(re-frame/reg-sub
   ::events/post-payload
   (fn [db]
     (:post-payload db)))
